@@ -32,8 +32,8 @@ void VextON() {
 const int PINO_BOOT = 0;    // botão PRG
 
 // ==== Wi-Fi + Firebase ====
-const char* WIFI_SSID     = "Antenna_2.4_vivo";
-const char* WIFI_PASSWORD = "s@t.4NT3NN4";
+const char* WIFI_SSID     = "";
+const char* WIFI_PASSWORD = "";
 const char* FIREBASE_URL  = "https://lora-telemetria-default-rtdb.firebaseio.com/telemetria/gateway01.json";
 
 
