@@ -1,7 +1,8 @@
-//apenas a central separada para caso implemente mais coisas e quisermos fazer a separação
 // === Tipo do botão (vem antes só por causa da Arduino IDE que lê depois do include as funçoes) ===
 enum Press {NENHUM, CURTO, LONGO, MUITO_LONGO};
 
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include <Wire.h>
 #include "heltec.h"
 #include "HT_SSD1306Wire.h"  // mesmo driver do SimpleDemo
@@ -21,18 +22,22 @@ void VextON() {
 }
 
 // ==== CONFIGURAÇÃO BÁSICA ====
-#define BAND        915E6
+#define BAND        433E6
 #define TX_POWER    17
 #define SYNC_WORD   0x12
 #define BAUD        115200
-#define NODE_ID     "N02"   // este nó (central)
+#define NODE_ID     "N02"   // nó (central/gateway)
 #define DEST_ID     "N01"   // nó periférico
 
 const int PINO_BOOT = 0;    // botão PRG
 
-// Respostas rápidas do central
+// ==== Wi-Fi + Firebase ====
+const char* WIFI_SSID     = "Antenna_2.4_vivo";
+const char* WIFI_PASSWORD = "s@t.4NT3NN4";
+const char* FIREBASE_URL  = "https://lora-telemetria-default-rtdb.firebaseio.com/telemetria/gateway01.json";
 
-// código interno 
+
+// Respostas rápidas do central / código interno 
 const char* RESPOSTAS_CODE[] = {
   "OK_RECEBIDO",
   "EQUIPE_A_CAMINHO",
@@ -41,7 +46,7 @@ const char* RESPOSTAS_CODE[] = {
   "REGISTRADO"
 };
 
-// label para tela (vai no TXT por enquanto)
+// label para tela 
 const char* RESPOSTAS_LABEL[] = {
   "OK recebido",
   "Equipe a caminho",
@@ -105,8 +110,6 @@ void ui_menu() {
 }
 
   display.drawString(0, 48, "Resp.: " + String(RESPOSTAS_LABEL[indiceResp]));
-  //display.drawString(0, 54, "PRG curto=Prox  longo=Enviar");
-
   display.display();
 }
 
@@ -114,17 +117,15 @@ void ui_status(const String& s1, const String& s2="") {
   display.clear();
   display.setFont(ArialMT_Plain_10);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
-
   display.drawStringMaxWidth(0, 0, 128, s1);
   if (s2.length()) display.drawStringMaxWidth(0, 14, 128, s2);
-
   display.display();
 }
 
 // ---------- RADIO ----------
 
 void radio_setup() {
-  // displayOn=false (nós mesmas cuidamos do OLED),
+  // displayOn=false (nós mesmos cuidamos do OLED),
   // LoRaOn=true, SerialOn=true, PABOOST=true
   Heltec.begin(false, true, true, true, BAND);
 
@@ -207,6 +208,56 @@ Press ler_press() {
   return NENHUM;
 }
 
+// ---------- GATEWAY: Wi-Fi + Firebase ----------
+
+void wifiConnect() {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    ui_status("WiFi", "Conectando...");
+    unsigned long t = millis();
+
+    while (WiFi.status() != WL_CONNECTED && millis() - t < 20000) {
+        delay(500);
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        ui_status("WiFi conectado", WiFi.localIP().toString());
+    } else {
+        ui_status("WiFi falhou", "Sem conexao");
+    }
+
+    delay(1000);
+    ui_menu();
+}
+
+// extrai campo para montar JSON
+String field(const String &p, const String &k) {
+    String pat = k + "=";
+    int i = p.indexOf(pat);
+    if (i < 0) return "";
+    int s = i + pat.length();
+    int e = p.indexOf(';', s);
+    if (e < 0) e = p.length();
+    return p.substring(s, e);
+}
+
+void sendFB(const String &p) {
+    if (WiFi.status() != WL_CONNECTED) wifiConnect();
+
+    String src = field(p, "SRC");
+    if (src == "") src = field(p, "src");
+
+    String json = "{\"raw\":\"" + p + "\",\"src\":\"" + src + "\"}";
+
+    HTTPClient http;
+    http.begin(FIREBASE_URL);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(json);
+    Serial.println("[HTTP] POST -> " + String(code));
+    http.end();
+}
+
 // ---------- SETUP ----------
 
 void setup() {
@@ -214,9 +265,7 @@ void setup() {
   Serial.begin(BAUD);
   delay(200);
 
-  radio_setup();
-
-  // Liga alimentação do OLED e I2C correto, como no SimpleDemo
+  // Liga alimentação do OLED e I2C correto
   VextON();
   delay(100);
   Wire.begin(SDA_OLED, SCL_OLED);
@@ -227,11 +276,17 @@ void setup() {
   display.setFont(ArialMT_Plain_10);
   display.drawString(0, 0, "OLED OK - Central");
   display.display();
-
   delay(1200);
-  ui_menu();
 
+  // Rádio LoRa
+  radio_setup();
+
+  // Conecta Wi-Fi
+  wifiConnect();
+  
+  ui_menu();
   Serial.println("Central pronto.");
+
 }
 
 // ---------- LOOP ----------
@@ -249,7 +304,6 @@ void loop() {
     // envia resposta para o último pedido recebido
     enviar_resposta();
   }
-  // MUITO_LONGO pode ser usado depois para alguma função extra (ex.: reset, alerta especial)
 
   // Receber mensagens do periférico
   int tam = LoRa.parsePacket();
@@ -282,6 +336,9 @@ void loop() {
         ui_status("Msg recebida!", linha);
         delay(1000);
         ui_menu();
+
+        // Envia mensagem bruta para o Firebase (telemetria)
+        sendFB(msg);
       }
     }
   }
